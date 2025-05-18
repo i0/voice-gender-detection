@@ -72,12 +72,6 @@ async def root():
             <h1>Gender Recognition API</h1>
             <p>Welcome to the Gender Recognition API. This service predicts gender based on audio files.</p>
             
-            <div class="disclaimer">
-                <strong>Disclaimer:</strong> This tool is provided for educational and research purposes only. 
-                The model performs binary classification and may not represent the full diversity of human voices. 
-                Please use responsibly and with consideration for privacy and ethical implications.
-            </div>
-            
             <div class="links">
                 <a href="/docs">📚 API Documentation</a>
                 <a href="/ui">🖥️ Web Interface</a>
@@ -107,12 +101,6 @@ async def ui():
         </head>
         <body>
             <h1>Gender Recognition UI</h1>
-            
-            <div class="disclaimer">
-                <strong>Disclaimer:</strong> This tool is provided for educational and research purposes only. 
-                The model performs binary classification and may not represent the full diversity of human voices. 
-                Please use responsibly and with consideration for privacy and ethical implications.
-            </div>
             
             <div class="form-container">
                 <h2>Upload Audio</h2>
@@ -164,7 +152,6 @@ async def ui():
                         const confidence = Math.max(femaleScore, maleScore);
                         
                         resultHtml += `<p><strong>Predicted Gender:</strong> ${predictedGender} (${confidence.toFixed(2)}% confidence)</p>`;
-                        resultHtml += `<p><em>Note: This prediction is based on acoustic patterns only and should be interpreted as probabilistic rather than definitive.</em></p>`;
                         
                         result.innerHTML = resultHtml;
                         result.style.display = 'block';

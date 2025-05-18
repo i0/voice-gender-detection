@@ -6,3 +6,4 @@ uvicorn==0.22.0
 python-multipart==0.0.6
 tqdm==4.65.0
 pydub==0.25.1
+numpy<2.0.0
