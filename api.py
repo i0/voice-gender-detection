@@ -23,8 +23,12 @@ logger = logging.getLogger("gender-api")
 # Initialize FastAPI
 app = FastAPI(
     title="Gender Recognition API",
-    description="API for gender recognition based on audio files",
+    description="API for gender recognition based on audio files. This tool is provided for educational and research purposes only.",
     version="1.0.0",
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
 )
 
 # Add CORS middleware
@@ -61,11 +65,18 @@ async def root():
                 h1 { color: #333; }
                 .links { margin-top: 20px; }
                 .links a { display: block; margin-bottom: 10px; }
+                .disclaimer { margin-top: 20px; padding: 15px; border: 1px solid #f8d7da; background-color: #f8d7da; color: #721c24; border-radius: 5px; }
             </style>
         </head>
         <body>
             <h1>Gender Recognition API</h1>
             <p>Welcome to the Gender Recognition API. This service predicts gender based on audio files.</p>
+            
+            <div class="disclaimer">
+                <strong>Disclaimer:</strong> This tool is provided for educational and research purposes only. 
+                The model performs binary classification and may not represent the full diversity of human voices. 
+                Please use responsibly and with consideration for privacy and ethical implications.
+            </div>
             
             <div class="links">
                 <a href="/docs">📚 API Documentation</a>
@@ -91,10 +102,18 @@ async def ui():
                 .loading { display: none; margin-top: 20px; }
                 .female { color: #FF69B4; }
                 .male { color: #0000FF; }
+                .disclaimer { margin-top: 20px; padding: 15px; border: 1px solid #f8d7da; background-color: #f8d7da; color: #721c24; border-radius: 5px; }
             </style>
         </head>
         <body>
             <h1>Gender Recognition UI</h1>
+            
+            <div class="disclaimer">
+                <strong>Disclaimer:</strong> This tool is provided for educational and research purposes only. 
+                The model performs binary classification and may not represent the full diversity of human voices. 
+                Please use responsibly and with consideration for privacy and ethical implications.
+            </div>
+            
             <div class="form-container">
                 <h2>Upload Audio</h2>
                 <p>Upload an audio file (.wav, .mp3, .ogg) to predict gender:</p>
@@ -145,6 +164,7 @@ async def ui():
                         const confidence = Math.max(femaleScore, maleScore);
                         
                         resultHtml += `<p><strong>Predicted Gender:</strong> ${predictedGender} (${confidence.toFixed(2)}% confidence)</p>`;
+                        resultHtml += `<p><em>Note: This prediction is based on acoustic patterns only and should be interpreted as probabilistic rather than definitive.</em></p>`;
                         
                         result.innerHTML = resultHtml;
                         result.style.display = 'block';
@@ -165,6 +185,9 @@ async def ui():
 async def predict(file: UploadFile = File(...)):
     """
     Predict gender from an audio file
+    
+    This endpoint analyzes an audio file and returns probabilities for male/female classification.
+    Note that this is for educational purposes only and should be used responsibly.
     """
     # Validate audio format
     valid_formats = [".wav", ".mp3", ".ogg"]

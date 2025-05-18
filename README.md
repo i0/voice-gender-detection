@@ -10,6 +10,18 @@ This project provides a service for recognizing gender from audio files using a 
 - 🐳 Docker support for easy deployment
 - 📊 Detailed logging with emojis
 
+## Ethical Considerations
+
+**Important Disclaimer**: This tool is provided for educational and research purposes only.
+
+- **Bias Awareness**: The underlying model was trained on the LibriSpeech dataset, which may not represent the full diversity of human voices and may contain inherent biases.
+- **Binary Classification**: This model only classifies audio as "male" or "female" based on acoustic patterns learned from the training data. It does not account for non-binary gender identities.
+- **Consent**: Always obtain consent before analyzing someone's voice data.
+- **Privacy**: Process audio data responsibly and in accordance with relevant privacy laws and regulations.
+- **Responsible Use**: Do not use this tool for discrimination, surveillance, or any applications that may infringe on human rights.
+
+Gender prediction systems should be approached as probabilistic tools rather than definitive classifiers of a person's gender identity.
+
 ## Getting Started
 
 ### Prerequisites
@@ -123,4 +135,6 @@ The code structure includes:
 
 ## License
 
-This project is provided as-is without any warranty. Use at your own risk.
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+The underlying model [alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech](https://huggingface.co/alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech) is subject to its own license terms as specified by its creators.
