@@ -94,6 +94,8 @@ async def ui():
                 button { background-color: #4CAF50; color: white; padding: 10px 15px; border: none; cursor: pointer; margin-top: 10px; }
                 #result { margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; display: none; }
                 .loading { display: none; margin-top: 20px; }
+                .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(0, 0, 0, 0.1); border-radius: 50%; border-top-color: #4CAF50; animation: spin 1s ease-in-out infinite; margin-right: 10px; vertical-align: middle; }
+                @keyframes spin { to { transform: rotate(360deg); } }
                 .female { color: #FF69B4; }
                 .male { color: #0000FF; }
                 .disclaimer { margin-top: 20px; padding: 15px; border: 1px solid #f8d7da; background-color: #f8d7da; color: #721c24; border-radius: 5px; }
@@ -107,7 +109,7 @@ async def ui():
                 <p>Upload an audio file (.wav, .mp3, .ogg) to predict gender:</p>
                 <input type="file" id="audioFile" accept=".wav, .mp3, .ogg">
                 <button onclick="predictGender()">Predict Gender</button>
-                <div class="loading" id="loading">Processing... This may take a few seconds</div>
+                <div class="loading" id="loading"><div class="spinner"></div> Processing... This may take a few seconds</div>
             </div>
             <div id="result"></div>
             
@@ -145,13 +147,13 @@ async def ui():
                         const femaleScore = data.female * 100;
                         const maleScore = data.male * 100;
                         
-                        resultHtml += `<p><span class="female">Female: ${femaleScore.toFixed(2)}%</span></p>`;
-                        resultHtml += `<p><span class="male">Male: ${maleScore.toFixed(2)}%</span></p>`;
+                        resultHtml += `<p><span class="female">Female: ${femaleScore}%</span></p>`;
+                        resultHtml += `<p><span class="male">Male: ${maleScore}%</span></p>`;
                         
                         const predictedGender = femaleScore > maleScore ? 'Female' : 'Male';
                         const confidence = Math.max(femaleScore, maleScore);
                         
-                        resultHtml += `<p><strong>Predicted Gender:</strong> ${predictedGender} (${confidence.toFixed(2)}% confidence)</p>`;
+                        resultHtml += `<p><strong>Predicted Gender:</strong> ${predictedGender} (${confidence}% confidence)</p>`;
                         
                         result.innerHTML = resultHtml;
                         result.style.display = 'block';
