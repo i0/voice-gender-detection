@@ -79,7 +79,8 @@ class CollateFunc:
 def predict_with_score(
     dataloader: DataLoader,
     model: torch.nn.Module,
-    device: torch.device
+    device: torch.device,
+    progress_callback=None
 ) -> List[Dict[str, float]]:
     """Run inference on audio files and return probabilities for each class."""
     model.to(device)
@@ -87,12 +88,32 @@ def predict_with_score(
     all_results = []
 
     with torch.no_grad():
-        for batch in tqdm.tqdm(dataloader, desc="Running inference"):
+        total_batches = len(dataloader)
+        progress_bar = tqdm.tqdm(dataloader, desc="Running inference")
+        
+        for batch_idx, batch in enumerate(progress_bar):
             inputs = batch['input_values'].to(device)
             masks = batch['attention_mask'].to(device) if batch['attention_mask'] is not None else None
             outputs = model(inputs, attention_mask=masks).logits
             probs = F.softmax(outputs, dim=-1).cpu().numpy()
-
+            
+            # Calculate progress percentage - blend model loading (15-30%) with inference (30-95%)
+            # This makes the progress bar more informative from the user perspective
+            if total_batches > 0:
+                inference_progress = (batch_idx + 1) / total_batches
+                # Map inference_progress from 0-1 to 30-95%
+                progress = int(30 + inference_progress * 65)
+                
+                # Call progress callback if provided
+                if progress_callback:
+                    if batch_idx == 0:
+                        progress_callback(30, "Starting inference...")
+                    elif batch_idx == total_batches - 1:  # Last batch
+                        progress_callback(95, "Finalizing results...")
+                    else:
+                        step_desc = f"Processing batch {batch_idx + 1}/{total_batches}"
+                        progress_callback(progress, step_desc)
+            
             for p in probs:
                 # map each label to its probability
                 all_results.append({model.config.id2label[i]: float(p[i]) for i in range(len(p))})
@@ -105,7 +126,8 @@ def get_gender_and_score(
     audio_paths: List[str],
     label2id: Dict[str, int],
     id2label: Dict[int, str],
-    device: torch.device = torch.device('cpu')
+    device: torch.device = torch.device('cpu'),
+    progress_callback=None
 ) -> Union[Dict[str, float], List[Dict[str, float]]]:
     """
     Predict gender from audio files.
@@ -141,6 +163,6 @@ def get_gender_and_score(
     loader = DataLoader(dataset, batch_size=16, collate_fn=collate_fn, shuffle=False)
 
     # inference
-    results = predict_with_score(loader, model, device)
+    results = predict_with_score(loader, model, device, progress_callback)
     # return single dict if only one input
     return results[0] if len(results) == 1 else results
