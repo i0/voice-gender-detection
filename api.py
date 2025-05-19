@@ -278,16 +278,22 @@ async def predict(file: UploadFile = File(...)):
             
             # Process the audio file
             logger.info(f"🎵 Processing audio file: {file.filename}")
-            yield json.dumps({"status": "processing", "progress": 15, "message": "Loading machine learning model..."}) + "\n"
+            yield json.dumps({"status": "processing", "progress": 15, "message": "Checking model files..."}) + "\n"
             
-            # Additional progress point to make the UI feel more responsive
-            await asyncio.sleep(0.5)
-            yield json.dumps({"status": "processing", "progress": 20, "message": "Preparing audio data..."}) + "\n"
-            await asyncio.sleep(0.3)
-            yield json.dumps({"status": "processing", "progress": 25, "message": "Starting analysis..."}) + "\n"
+            # The model download callback will provide updates from 0-10% progress
+            # We want this shown as 15-25% in the UI, so we'll offset accordingly
+            def model_download_progress_callback(progress, message):
+                # Map model_progress (0-10%) to UI progress (15-25%)
+                ui_progress = 15 + progress
+                # Update the progress as usual
+                progress_updates["current"] = {"progress": ui_progress, "message": message}
+                logger.info(f"Download progress: {progress}% - {message}")
+                
+            # Don't add artificial progress here anymore, as the real download progress
+            # will be reported through the callback
             
             # Start model processing in a separate task
-            model_task = asyncio.create_task(run_model_processing(wav_path, progress_callback))
+            model_task = asyncio.create_task(run_model_processing(wav_path, model_download_progress_callback))
             
             # While the model is processing, poll for progress updates
             last_progress = None
@@ -354,7 +360,7 @@ async def predict(file: UploadFile = File(...)):
     return StreamingResponse(progress_generator(), media_type="application/x-ndjson")
     
 
-async def run_model_processing(wav_path, progress_callback):
+async def run_model_processing(wav_path, download_progress_callback):
     """Run model processing in an async-friendly way"""
     # This runs the model in a way that doesn't block the event loop
     return await asyncio.to_thread(
@@ -364,7 +370,7 @@ async def run_model_processing(wav_path, progress_callback):
         label2id=LABEL2ID,
         id2label=ID2LABEL,
         device=DEVICE,
-        progress_callback=progress_callback
+        progress_callback=download_progress_callback
     )
 
 @app.get("/health")

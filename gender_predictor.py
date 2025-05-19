@@ -2,10 +2,48 @@ import os
 import torch
 import torchaudio
 import tqdm
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Callable
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification, Wav2Vec2Processor
+from transformers.utils import logging
+from huggingface_hub import HfFolder, hf_hub_download, file_download
+
+
+class ProgressCallback:
+    """Custom progress callback for Hugging Face model downloads."""
+    def __init__(self, progress_callback=None):
+        self.progress_callback = progress_callback
+        self.total_size = 0
+        self.downloaded = 0
+        self.current_file = ""
+        self.last_progress = 0
+    
+    def __call__(self, current: int, total: int, file_name: str):
+        """Progress callback for file downloads.
+        
+        Args:
+            current: Current number of bytes downloaded
+            total: Total file size in bytes
+            file_name: Name of file being downloaded
+        """
+        # Update current file name if it's different
+        if file_name != self.current_file:
+            self.current_file = file_name
+        
+        # Update progress tracking
+        self.total_size = total
+        self.downloaded = current
+        
+        # Calculate progress percentage (0-10%)
+        # We only allocate 0-10% of the total progress for downloads
+        # This is because downloads are just the initial part of the processing
+        progress = min(10, int(10 * current / max(1, total)))
+        
+        # Only call progress_callback if provided and progress has changed
+        if self.progress_callback and progress != self.last_progress:
+            self.progress_callback(progress, f"Downloading model files: {file_name}")
+            self.last_progress = progress
 
 
 class CustomDataset(torch.utils.data.Dataset):
@@ -97,17 +135,18 @@ def predict_with_score(
             outputs = model(inputs, attention_mask=masks).logits
             probs = F.softmax(outputs, dim=-1).cpu().numpy()
             
-            # Calculate progress percentage - blend model loading (15-30%) with inference (30-95%)
+            # Calculate progress percentage - blend model loading (0-25%) with inference (25-95%)
             # This makes the progress bar more informative from the user perspective
             if total_batches > 0:
                 inference_progress = (batch_idx + 1) / total_batches
-                # Map inference_progress from 0-1 to 30-95%
-                progress = int(30 + inference_progress * 65)
+                # Map inference_progress from 0-1 to 25-95% 
+                # (model download already took 0-25%)
+                progress = int(25 + inference_progress * 70)
                 
                 # Call progress callback if provided
                 if progress_callback:
                     if batch_idx == 0:
-                        progress_callback(30, "Starting inference...")
+                        progress_callback(25, "Starting inference...")
                     elif batch_idx == total_batches - 1:  # Last batch
                         progress_callback(95, "Finalizing results...")
                     else:
@@ -138,19 +177,47 @@ def get_gender_and_score(
         label2id: Dictionary mapping labels to IDs
         id2label: Dictionary mapping IDs to labels
         device: Device to run inference on (cpu or cuda)
+        progress_callback: Optional callback function to report progress
         
     Returns:
         Dictionary with gender probabilities if one audio file, 
         or list of dictionaries if multiple audio files
     """
-    # load feature extractor and model
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_name_or_path, cache_dir="./cache")
+    # Setup progress reporting
+    if progress_callback:
+        progress_callback(0, "Preparing to download model files...")
+        # Configure huggingface_hub download progress callback
+        download_callback = ProgressCallback(progress_callback)
+        
+        # Set the download progress callback for transformers
+        logging.set_verbosity_info()
+        # Set HF_HUB_ENABLE_HF_TRANSFER=1 for modern download API
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    
+    # Load feature extractor and model with progress tracking
+    if progress_callback:
+        progress_callback(5, "Downloading feature extractor...")
+    
+    feature_extractor = AutoFeatureExtractor.from_pretrained(
+        model_name_or_path, 
+        cache_dir="./cache",
+        token=HfFolder.get_token(),
+        use_auth_token=HfFolder.get_token(),
+        force_download=False
+    )
+    
+    if progress_callback:
+        progress_callback(10, "Downloading model...")
+    
     model = AutoModelForAudioClassification.from_pretrained(
         model_name_or_path,
         num_labels=len(label2id),
         label2id=label2id,
         id2label=id2label,
-        cache_dir="./cache"
+        cache_dir="./cache",
+        token=HfFolder.get_token(),
+        use_auth_token=HfFolder.get_token(),
+        force_download=False
     )
 
     # prepare dataset & dataloader
