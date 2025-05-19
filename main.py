@@ -7,7 +7,6 @@ import asyncio
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import List, Dict, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydub import AudioSegment
 from gender_predictor import get_gender_and_score
+from typing import Callable, Dict, Optional
 
 # Setup logging
 logging.basicConfig(
@@ -22,6 +22,100 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger("gender-api")
+
+# Progress milestones (percentage complete)
+class ProgressPhase:
+    INITIAL = 0
+    AUDIO_CONVERSION_START = 5
+    AUDIO_CONVERSION_COMPLETE = 15
+    MODEL_LOADING_START = 15
+    MODEL_LOADING_COMPLETE = 40
+    INFERENCE_START = 40
+    INFERENCE_COMPLETE = 95
+    FINALIZING = 95
+    COMPLETE = 100
+
+class ProgressManager:
+    """
+    A central class to manage progress tracking throughout the processing pipeline.
+    Ensures that progress only moves forward and provides a unified interface
+    for progress updates.
+    """
+    def __init__(self, on_progress: Optional[Callable[[int, str], None]] = None):
+        self.current_progress = ProgressPhase.INITIAL
+        self.current_message = "Initializing..."
+        self.on_progress = on_progress
+        self.logger = logging.getLogger("progress-manager")
+    
+    def update(self, progress: int, message: str) -> None:
+        """
+        Update progress to a new value, ensuring it never moves backward.
+        
+        Args:
+            progress: The new progress value (0-100)
+            message: A descriptive message about the current progress
+        """
+        # Ensure progress is within bounds
+        progress = max(0, min(100, progress))
+        
+        # Only update if progress is moving forward
+        if progress >= self.current_progress:
+            old_progress = self.current_progress
+            self.current_progress = progress
+            self.current_message = message
+            
+            # Log the progress update
+            self.logger.info(f"Progress update: {old_progress}% → {progress}%: {message}")
+            
+            # Notify listener if available
+            if self.on_progress:
+                self.on_progress(progress, message)
+        else:
+            # Log attempt to move backward (but don't update)
+            self.logger.warning(
+                f"Ignoring backward progress update: {self.current_progress}% → {progress}%: {message}"
+            )
+    
+    def get_state(self) -> Dict[str, any]:
+        """Get current progress state as a dictionary"""
+        return {
+            "progress": self.current_progress,
+            "message": self.current_message
+        }
+    
+    def create_callback(self) -> Callable[[int, str], None]:
+        """Create a callback function that updates progress via this manager"""
+        return lambda progress, message: self.update(progress, message)
+    
+    def phase_callback(self, phase_start: int, phase_end: int) -> Callable[[float, str], None]:
+        """
+        Create a callback for a specific processing phase.
+        
+        Args:
+            phase_start: The starting percentage of this phase
+            phase_end: The ending percentage of this phase
+            
+        Returns:
+            A callback function that maps phase progress (0-1) to overall progress
+        """
+        def callback(phase_progress: float, message: str) -> None:
+            # Map phase progress (0-1) to global progress
+            phase_progress = max(0, min(1, phase_progress))  # Clamp to 0-1
+            global_progress = int(phase_start + phase_progress * (phase_end - phase_start))
+            self.update(global_progress, message)
+        return callback
+    
+    def audio_conversion_callback(self) -> Callable[[float, str], None]:
+        """Create a callback for audio conversion progress (5-15%)"""
+        return self.phase_callback(ProgressPhase.AUDIO_CONVERSION_START, ProgressPhase.AUDIO_CONVERSION_COMPLETE)
+    
+    def model_loading_callback(self) -> Callable[[float, str], None]:
+        """Create a callback for model loading progress (15-40%)"""
+        return self.phase_callback(ProgressPhase.MODEL_LOADING_START, ProgressPhase.MODEL_LOADING_COMPLETE)
+    
+    def inference_callback(self) -> Callable[[float, str], None]:
+        """Create a callback for model inference progress (40-95%)"""
+        return self.phase_callback(ProgressPhase.INFERENCE_START, ProgressPhase.INFERENCE_COMPLETE)
 
 # Model configuration
 MODEL_PATH = "alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech"
@@ -37,11 +131,10 @@ STATIC_DIR.mkdir(exist_ok=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: log application information
-    port = 8000
     logger.info(f"🚀 Starting Gender Recognition API on device: {DEVICE}")
-    logger.info(f"🌐 Server is running at: http://localhost:{port}")
-    logger.info(f"✨ Web UI: 🎙️ http://localhost:{port}/ui")
-    logger.info(f"📚 API Docs: 📋 http://localhost:{port}/docs")
+    logger.info(f"🌐 Server is running at: http://localhost:8000")
+    logger.info(f"✨ Web UI: 🎙️ http://localhost:8000/ui")
+    logger.info(f"📚 API Docs: 📋 http://localhost:8000/docs")
     
     yield  # This is where FastAPI serves the application
     
@@ -308,91 +401,148 @@ async def predict(file: UploadFile = File(...)):
                 "inference": 0
             }
             
+            # Initialize thread-safe progress tracking system
+            # We'll use a synchronized dictionary to store the latest progress to allow
+            # worker threads to safely report progress to the main thread
+            import threading
+            progress_lock = threading.Lock()
+            latest_progress = {"value": None}
+            
+            # Function to update progress from any thread
+            def thread_safe_progress_update(progress, message):
+                with progress_lock:
+                    latest_progress["value"] = {
+                        "status": "processing", 
+                        "progress": progress, 
+                        "message": message
+                    }
+            
+            # Create a ProgressManager that reports to our thread-safe function
+            progress_manager = ProgressManager(
+                on_progress=thread_safe_progress_update
+            )
+            
             # Initial progress update
-            yield json.dumps({"status": "processing", "progress": 0, "message": "Starting processing..."}) + "\n"
-            await asyncio.sleep(0.1)  # Small delay to ensure frontend receives this message
+            progress_manager.update(ProgressPhase.INITIAL, "Starting processing...")
             
-            # Create a shared object for progress updates that's thread-safe
-            progress_updates = {"current": None}
-            
-            def progress_callback(progress, message):
-                # Just update the shared progress data - no asyncio calls from the worker thread
-                progress_updates["current"] = {"progress": progress, "message": message}
-                logger.info(f"Progress update: {progress}% - {message}")
+            # Send initial progress directly
+            yield json.dumps({
+                "status": "processing", 
+                "progress": ProgressPhase.INITIAL,
+                "message": "Starting processing..."
+            }) + "\n"
                 
             # Convert to WAV if needed
             wav_path = temp_path
             if ext != ".wav":
                 conversion_start = time.time()
-                yield json.dumps({"status": "processing", "progress": 5, "message": f"Converting {ext} to WAV format..."}) + "\n"
+                progress_manager.update(
+                    ProgressPhase.AUDIO_CONVERSION_START,
+                    f"Converting {ext} to WAV format..."
+                )
+                
+                # Do the actual conversion
                 audio = AudioSegment.from_file(temp_path)
                 wav_path = temp_path.replace(ext, ".wav")
                 audio.export(wav_path, format="wav")
+                
                 processing_times["conversion"] = time.time() - conversion_start
-                yield json.dumps({"status": "processing", "progress": 10, "message": "Audio conversion complete"}) + "\n"
+                progress_manager.update(
+                    ProgressPhase.AUDIO_CONVERSION_COMPLETE,
+                    "Audio conversion complete"
+                )
             
             # Process the audio file
             logger.info(f"🎵 Processing audio file: {file.filename}")
-            yield json.dumps({"status": "processing", "progress": 15, "message": "Checking model files..."}) + "\n"
+            progress_manager.update(
+                ProgressPhase.MODEL_LOADING_START, 
+                "Loading model files..."
+            )
             
-            # The model download callback will provide updates from 0-10% progress
-            # We want this shown as 15-25% in the UI, so we'll offset accordingly
+            # Record model loading start time
             model_loading_start = time.time()
-            def model_download_progress_callback(progress, message):
-                # Map model_progress (0-10%) to UI progress (15-25%)
-                ui_progress = 15 + progress
-                # Update the progress as usual
-                progress_updates["current"] = {"progress": ui_progress, "message": message}
-                logger.info(f"Download progress: {progress}% - {message}")
-                
-            # Don't add artificial progress here anymore, as the real download progress
-            # will be reported through the callback
+            
+            # Create a model download progress callback that maps to our progress phases
+            model_callback = progress_manager.model_loading_callback()
+            
+            # Send an initial estimate based on cache size
+            try:
+                from gender_predictor import get_cache_size_mb, EXPECTED_CACHE_SIZE_MB
+                cache_size_mb = get_cache_size_mb("./cache")
+                # Map cache_size to a 0-1 progress within the model loading phase
+                # Note: We're using min() to cap it at 1.0 (100%)
+                cache_progress = min(1.0, cache_size_mb / EXPECTED_CACHE_SIZE_MB)
+                model_callback(
+                    cache_progress, 
+                    f"Loading model files: {cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB"
+                )
+            except Exception as e:
+                logger.error(f"Failed to estimate cache size: {str(e)}")
+                # Still provide a reasonable progress update even if estimation fails
+                model_callback(0.1, "Loading model files...")
             
             # Start model processing in a separate task
-            model_task = asyncio.create_task(run_model_processing(wav_path, model_download_progress_callback))
-            
-            # While the model is processing, poll for progress updates
-            last_progress = None
+            # Note: This is where our refactored model processing function will be used
             inference_start = None
             
+            # Define our inference callback that receives progress from the model
+            def inference_progress_callback(progress, message):
+                nonlocal inference_start
+                
+                # Mark the start of inference if this is the first callback
+                if inference_start is None and progress >= 0.01:  # Using a small threshold
+                    inference_start = time.time()
+                    processing_times["model_loading"] = time.time() - model_loading_start
+                
+                # Map model progress (0-1) to our inference phase (40-95%)
+                inference_callback = progress_manager.inference_callback()
+                inference_callback(progress, message)
+            
+            # Start model processing 
+            model_task = asyncio.create_task(
+                run_model_processing(wav_path, inference_progress_callback)
+            )
+            
+            # Process progress updates while model is running
+            last_sent_progress = None
+            
             while not model_task.done():
-                # Check if we have a new progress update
-                current_progress = progress_updates["current"]
+                # Check for new progress updates from the thread-safe structure
+                with progress_lock:
+                    current_progress = latest_progress["value"]
                 
-                if current_progress is not None and current_progress != last_progress:
-                    # We have a new progress update, send it to the client
-                    yield json.dumps({
-                        "status": "processing", 
-                        "progress": current_progress["progress"], 
-                        "message": current_progress["message"]
-                    }) + "\n"
+                # Only send if we have a new progress update
+                if current_progress is not None and current_progress != last_sent_progress:
+                    # Send the progress update to the client
+                    yield json.dumps(current_progress) + "\n"
+                    last_sent_progress = current_progress
                     
-                    # Update last progress so we don't send duplicates
-                    last_progress = current_progress
-                    
-                    # Mark the end of model loading and start of inference
-                    if current_progress["progress"] >= 25 and inference_start is None:
-                        processing_times["model_loading"] = time.time() - model_loading_start
-                        inference_start = time.time()
-                
-                # Wait a bit before checking again
+                # Short wait before checking again
                 await asyncio.sleep(0.2)
             
             # Get the result from the completed model task
             result = await model_task
             
-            # Calculate inference time
+            # Calculate timing information
             if inference_start:
                 processing_times["inference"] = time.time() - inference_start
-            
-            # Calculate total processing time
             processing_times["total"] = time.time() - start_time
             
-            # Send a 100% complete message
-            yield json.dumps({"status": "processing", "progress": 99, "message": "Generating results..."}) + "\n"
+            # Send the finalizing update
+            progress_manager.update(
+                ProgressPhase.FINALIZING, 
+                "Generating results..."
+            )
             
-            # After model processing is done, yield the final update
-            # Log the prediction
+            # Get the final progress update
+            with progress_lock:
+                final_progress = latest_progress["value"]
+            
+            # Send the final progress update if we have one
+            if final_progress is not None and final_progress != last_sent_progress:
+                yield json.dumps(final_progress) + "\n"
+            
+            # Process the prediction results
             female_score = result["female"]
             male_score = result["male"]
             predicted_gender = "female" if female_score > male_score else "male"
@@ -410,6 +560,16 @@ async def predict(file: UploadFile = File(...)):
             logger.info(f"⏱️ Audio conversion: {processing_times['conversion']:.2f}s")
             logger.info(f"⏱️ Model loading: {processing_times['model_loading']:.2f}s")
             logger.info(f"⏱️ Inference: {processing_times['inference']:.2f}s")
+            
+            # Mark as complete (100%)
+            progress_manager.update(ProgressPhase.COMPLETE, "Processing complete")
+            
+            # Send the completion update
+            with progress_lock:
+                completion_progress = latest_progress["value"]
+                
+            if completion_progress is not None:
+                yield json.dumps(completion_progress) + "\n"
                 
             # Final result with predictions and timing
             yield json.dumps({
@@ -435,14 +595,26 @@ async def predict(file: UploadFile = File(...)):
             # Clean up the temporary files
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-            if ext != ".wav" and os.path.exists(wav_path):
+            
+            # Check if wav_path was initialized and exists (only needed for non-wav files)
+            if ext != ".wav" and 'wav_path' in locals() and os.path.exists(wav_path):
                 os.unlink(wav_path)
     
     return StreamingResponse(progress_generator(), media_type="application/x-ndjson")
     
 
-async def run_model_processing(wav_path, download_progress_callback):
-    """Run model processing in an async-friendly way"""
+async def run_model_processing(wav_path, progress_callback):
+    """
+    Run model processing in an async-friendly way
+    
+    Args:
+        wav_path: Path to the WAV file to process
+        progress_callback: Callback function that accepts (progress, message) 
+                           where progress is 0-1
+    
+    Returns:
+        The result of gender prediction
+    """
     # Python 3.8 doesn't have asyncio.to_thread, so we use loop.run_in_executor instead
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
@@ -453,7 +625,7 @@ async def run_model_processing(wav_path, download_progress_callback):
             label2id=LABEL2ID,
             id2label=ID2LABEL,
             device=DEVICE,
-            progress_callback=download_progress_callback
+            progress_callback=progress_callback
         )
     )
 

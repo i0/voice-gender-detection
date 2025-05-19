@@ -1,26 +1,104 @@
 import os
+import time
 import torch
 import torchaudio
 import tqdm
-from typing import List, Optional, Union, Dict, Callable
+import subprocess
+from typing import List, Optional, Union, Dict
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification, Wav2Vec2Processor
 from transformers.utils import logging
-from huggingface_hub import HfFolder, hf_hub_download, file_download
+from huggingface_hub import HfFolder # Used in get_gender_and_score
 
+
+# Expected model cache size in MB (1.28 GB)
+EXPECTED_CACHE_SIZE_MB = 2408.7
+
+# Cache the folder size to avoid excessive disk operations
+_cache_size_cache = {}
+_cache_size_last_check = 0
+
+def get_cache_size_mb(cache_dir="./cache"):
+    """Get the size of the cache directory in megabytes.
+    
+    Args:
+        cache_dir: Path to the cache directory
+        
+    Returns:
+        Size of the cache directory in megabytes or 0 if directory doesn't exist
+    """
+    global _cache_size_cache, _cache_size_last_check
+    
+    # Use cached value if checked within the last 0.5 seconds
+    current_time = time.time()
+    if cache_dir in _cache_size_cache and current_time - _cache_size_last_check < 0.5:
+        return _cache_size_cache[cache_dir]
+    
+    _cache_size_last_check = current_time
+    
+    if not os.path.exists(cache_dir):
+        _cache_size_cache[cache_dir] = 0
+        return 0
+        
+    try:
+        # Calculate total size by walking the directory
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(cache_dir):
+            for f in filenames:
+                try:
+                    fp = os.path.join(dirpath, f)
+                    if os.path.exists(fp):
+                        total_size += os.path.getsize(fp)
+                except (PermissionError, FileNotFoundError, OSError) as e:
+                    # Skip files that can't be accessed
+                    continue
+        
+        # Convert to MB
+        size_mb = total_size / (1024 * 1024)
+        _cache_size_cache[cache_dir] = size_mb
+        return size_mb
+        
+    except Exception:
+        # Fallback to subprocess
+        try:
+            if os.name == 'posix':  # Linux/Mac
+                output = subprocess.check_output(['du', '-sm', cache_dir]).decode('utf-8')
+                size_mb = float(output.split()[0])
+                _cache_size_cache[cache_dir] = size_mb
+                return size_mb
+            else:  # Windows or unknown
+                _cache_size_cache[cache_dir] = 0
+                return 0
+        except Exception:
+            _cache_size_cache[cache_dir] = 0
+            return 0
 
 class ProgressCallback:
-    """Custom progress callback for Hugging Face model downloads."""
-    def __init__(self, progress_callback=None):
+    """
+    Progress callback for Hugging Face model downloads that tracks progress
+    using cache directory size.
+    """
+    def __init__(self, progress_callback=None, cache_dir="./cache"):
+        """
+        Initialize a progress callback that reports download progress.
+        
+        Args:
+            progress_callback: Callback function that accepts (progress, message)
+                              where progress is 0-1
+            cache_dir: Path to the cache directory
+        """
         self.progress_callback = progress_callback
-        self.total_size = 0
-        self.downloaded = 0
         self.current_file = ""
-        self.last_progress = 0
+        self.last_progress = -1  # Start at -1 to ensure first update happens
+        self.cache_dir = cache_dir
+        self.last_reported_cache_size = 0
+        # Threshold for update in MB (smaller for more frequent updates)
+        self.update_threshold_mb = 2
     
     def __call__(self, current: int, total: int, file_name: str):
-        """Progress callback for file downloads.
+        """
+        Progress callback for file downloads.
         
         Args:
             current: Current number of bytes downloaded
@@ -31,19 +109,36 @@ class ProgressCallback:
         if file_name != self.current_file:
             self.current_file = file_name
         
-        # Update progress tracking
-        self.total_size = total
-        self.downloaded = current
-        
-        # Calculate progress percentage (0-10%)
-        # We only allocate 0-10% of the total progress for downloads
-        # This is because downloads are just the initial part of the processing
-        progress = min(10, int(10 * current / max(1, total)))
-        
-        # Only call progress_callback if provided and progress has changed
-        if self.progress_callback and progress != self.last_progress:
-            self.progress_callback(progress, f"Downloading model files: {file_name}")
-            self.last_progress = progress
+        # Skip if no callback is provided
+        if not self.progress_callback:
+            return
+            
+        # Estimate overall download progress using cache directory size
+        try:
+            cache_size_mb = get_cache_size_mb(self.cache_dir)
+            
+            # Only update if cache size has changed significantly
+            if abs(cache_size_mb - self.last_reported_cache_size) > self.update_threshold_mb:
+                self.last_reported_cache_size = cache_size_mb
+                
+                # Calculate normalized progress (0-1) based on expected total size
+                progress = min(1.0, cache_size_mb / EXPECTED_CACHE_SIZE_MB)
+                
+                # Only call progress_callback if progress has changed significantly
+                if round(progress, 2) != self.last_progress:
+                    self.progress_callback(
+                        progress, 
+                        f"Downloading model files: {file_name} ({cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)"
+                    )
+                    self.last_progress = round(progress, 2)
+        except Exception as e:
+            # Log error but don't crash if progress reporting fails
+            logging.error(f"Error reporting download progress: {str(e)}")
+            
+            # Still try to provide a reasonable progress update
+            if self.last_progress < 0:  # Only if we haven't reported any progress yet
+                self.progress_callback(0.1, f"Downloading model files: {file_name}")
+                self.last_progress = 0.1
 
 
 class CustomDataset(torch.utils.data.Dataset):
@@ -120,7 +215,19 @@ def predict_with_score(
     device: torch.device,
     progress_callback=None
 ) -> List[Dict[str, float]]:
-    """Run inference on audio files and return probabilities for each class."""
+    """
+    Run inference on audio files and return probabilities for each class.
+    
+    Args:
+        dataloader: DataLoader with audio inputs
+        model: The model to use for inference
+        device: The device to run inference on
+        progress_callback: Optional callback function that accepts (progress, message)
+                          where progress is 0-1 representing inference progress
+                          
+    Returns:
+        List of dictionaries with prediction probabilities for each class
+    """
     model.to(device)
     model.eval()
     all_results = []
@@ -135,23 +242,21 @@ def predict_with_score(
             outputs = model(inputs, attention_mask=masks).logits
             probs = F.softmax(outputs, dim=-1).cpu().numpy()
             
-            # Calculate progress percentage - blend model loading (0-25%) with inference (25-95%)
-            # This makes the progress bar more informative from the user perspective
-            if total_batches > 0:
+            # Calculate normalized inference progress (0-1)
+            if total_batches > 0 and progress_callback:
+                # Calculate inference progress from 0 to 1
                 inference_progress = (batch_idx + 1) / total_batches
-                # Map inference_progress from 0-1 to 25-95% 
-                # (model download already took 0-25%)
-                progress = int(25 + inference_progress * 70)
                 
-                # Call progress callback if provided
-                if progress_callback:
-                    if batch_idx == 0:
-                        progress_callback(25, "Starting inference...")
-                    elif batch_idx == total_batches - 1:  # Last batch
-                        progress_callback(95, "Finalizing results...")
-                    else:
-                        step_desc = f"Processing batch {batch_idx + 1}/{total_batches}"
-                        progress_callback(progress, step_desc)
+                # Create appropriate message based on progress
+                if batch_idx == 0:
+                    message = "Starting inference..."
+                elif batch_idx == total_batches - 1:  # Last batch
+                    message = "Finalizing inference results..."
+                else:
+                    message = f"Processing batch {batch_idx + 1}/{total_batches}"
+                
+                # Report progress to callback
+                progress_callback(inference_progress, message)
             
             for p in probs:
                 # map each label to its probability
@@ -177,48 +282,80 @@ def get_gender_and_score(
         label2id: Dictionary mapping labels to IDs
         id2label: Dictionary mapping IDs to labels
         device: Device to run inference on (cpu or cuda)
-        progress_callback: Optional callback function to report progress
+        progress_callback: Optional callback function that accepts (progress, message)
+                          where progress is 0-1 (normalized progress)
         
     Returns:
         Dictionary with gender probabilities if one audio file, 
         or list of dictionaries if multiple audio files
     """
-    # Setup progress reporting
+    cache_dir = "./cache"
+    
+    # Track progress in two phases: model loading (0-0.5) and inference (0.5-1.0)
+    model_loading_callback = None
+    inference_callback = None
+    
     if progress_callback:
-        progress_callback(0, "Preparing to download model files...")
-        # Configure huggingface_hub download progress callback
-        download_callback = ProgressCallback(progress_callback)
+        # Create a callback for model loading phase (0-0.5 of total progress)
+        def model_loading_callback(phase_progress, message):
+            # Map phase progress (0-1) to overall progress (0-0.5)
+            overall_progress = phase_progress * 0.5
+            progress_callback(overall_progress, message)
+        
+        # Create a callback for inference phase (0.5-1.0 of total progress)
+        def inference_callback(phase_progress, message):
+            # Map phase progress (0-1) to overall progress (0.5-1.0)
+            overall_progress = 0.5 + phase_progress * 0.5
+            progress_callback(overall_progress, message)
+        
+        # Initial progress report
+        initial_cache_size_mb = get_cache_size_mb(cache_dir)
+        model_loading_callback(
+            0.0, 
+            f"Preparing to load model (current cache: {initial_cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)..."
+        )
+        
+        # Create a HuggingFace progress callback
+        hf_callback = ProgressCallback(model_loading_callback, cache_dir=cache_dir)
         
         # Set the download progress callback for transformers
         logging.set_verbosity_info()
         # Set HF_HUB_ENABLE_HF_TRANSFER=1 for modern download API
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     
-    # Load feature extractor and model with progress tracking
-    if progress_callback:
-        progress_callback(5, "Downloading feature extractor...")
+    try:
+        # Load feature extractor and model
+        feature_extractor = AutoFeatureExtractor.from_pretrained(
+            model_name_or_path, 
+            cache_dir=cache_dir,
+            use_auth_token=HfFolder.get_token(),
+            force_download=False
+        )
+        
+        # Report after feature extractor is loaded (approximately 30% through model loading)
+        if model_loading_callback:
+            model_loading_callback(0.3, "Feature extractor loaded, loading model...")
+        
+        model = AutoModelForAudioClassification.from_pretrained(
+            model_name_or_path,
+            num_labels=len(label2id),
+            label2id=label2id,
+            id2label=id2label,
+            cache_dir=cache_dir,
+            use_auth_token=HfFolder.get_token(),
+            force_download=False
+        )
+        
+        # Report model loaded successfully
+        if model_loading_callback:
+            model_loading_callback(1.0, "Model loaded successfully")
     
-    feature_extractor = AutoFeatureExtractor.from_pretrained(
-        model_name_or_path, 
-        cache_dir="./cache",
-        use_auth_token=HfFolder.get_token(),
-        force_download=False
-    )
-    
-    if progress_callback:
-        progress_callback(10, "Downloading model...")
-    
-    model = AutoModelForAudioClassification.from_pretrained(
-        model_name_or_path,
-        num_labels=len(label2id),
-        label2id=label2id,
-        id2label=id2label,
-        cache_dir="./cache",
-        use_auth_token=HfFolder.get_token(),
-        force_download=False
-    )
+    except Exception as e:
+        if progress_callback:
+            progress_callback(0, f"Error loading model: {str(e)}")
+        raise
 
-    # prepare dataset & dataloader
+    # Prepare dataset & dataloader
     dataset = CustomDataset(audio_paths, max_audio_len=5)
     collate_fn = CollateFunc(
         processor=feature_extractor,
@@ -227,7 +364,13 @@ def get_gender_and_score(
     )
     loader = DataLoader(dataset, batch_size=16, collate_fn=collate_fn, shuffle=False)
 
-    # inference
-    results = predict_with_score(loader, model, device, progress_callback)
-    # return single dict if only one input
+    # Run inference with the appropriate progress callback
+    results = predict_with_score(
+        loader, 
+        model, 
+        device, 
+        progress_callback=inference_callback if progress_callback else None
+    )
+    
+    # Return single dict if only one input
     return results[0] if len(results) == 1 else results
