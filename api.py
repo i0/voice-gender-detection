@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, Dict, Union
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -22,6 +23,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("gender-api")
 
+# Model configuration
+MODEL_PATH = "alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech"
+LABEL2ID = {"female": 0, "male": 1}
+ID2LABEL = {0: "female", 1: "male"}
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Create static directory if it doesn't exist
+STATIC_DIR = Path("static")
+STATIC_DIR.mkdir(exist_ok=True)
+
+# Define lifespan context manager (replaces on_event("startup"))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: log application information
+    port = 8000
+    logger.info(f"🚀 Starting Gender Recognition API on device: {DEVICE}")
+    logger.info(f"🌐 Server is running at: http://localhost:{port}")
+    logger.info(f"✨ Web UI: 🎙️ http://localhost:{port}/ui")
+    logger.info(f"📚 API Docs: 📋 http://localhost:{port}/docs")
+    
+    yield  # This is where FastAPI serves the application
+    
+    # Shutdown: clean up resources if needed
+    logger.info("🛑 Shutting down Gender Recognition API")
+
 # Initialize FastAPI
 app = FastAPI(
     title="Gender Recognition API",
@@ -31,16 +57,8 @@ app = FastAPI(
         "name": "MIT License",
         "url": "https://opensource.org/licenses/MIT",
     },
+    lifespan=lifespan,
 )
-
-@app.on_event("startup")
-async def startup_event():
-    """Log startup information when the application starts"""
-    port = 8000
-    logger.info(f"🚀 Starting Gender Recognition API on device: {DEVICE}")
-    logger.info(f"🌐 Server is running at: http://localhost:{port}")
-    logger.info(f"✨ Web UI: 🎙️ http://localhost:{port}/ui")
-    logger.info(f"📚 API Docs: 📋 http://localhost:{port}/docs")
 
 # Add CORS middleware
 app.add_middleware(
