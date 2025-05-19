@@ -4,12 +4,17 @@ import torch
 import torchaudio
 import tqdm
 import subprocess
+import logging
+import threading
 from typing import List, Optional, Union, Dict
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification, Wav2Vec2Processor
-from transformers.utils import logging
+from transformers import logging as transformers_logging
 from huggingface_hub import HfFolder # Used in get_gender_and_score
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 
 # Expected model cache size in MB (1.28 GB)
@@ -18,6 +23,12 @@ EXPECTED_CACHE_SIZE_MB = 2408.7
 # Cache the folder size to avoid excessive disk operations
 _cache_size_cache = {}
 _cache_size_last_check = 0
+
+# Global state for download progress tracking
+_download_phase = {"current": "feature_extractor"}
+_stop_monitoring = None
+_monitor_thread = None
+_last_reported_percentage = 0
 
 def get_cache_size_mb(cache_dir="./cache"):
     """Get the size of the cache directory in megabytes.
@@ -94,7 +105,8 @@ class ProgressCallback:
         self.cache_dir = cache_dir
         self.last_reported_cache_size = 0
         # Threshold for update in MB (smaller for more frequent updates)
-        self.update_threshold_mb = 2
+        # Using a very small threshold to get more frequent updates
+        self.update_threshold_mb = 0.5
     
     def __call__(self, current: int, total: int, file_name: str):
         """
@@ -105,9 +117,12 @@ class ProgressCallback:
             total: Total file size in bytes
             file_name: Name of file being downloaded
         """
-        # Update current file name if it's different
-        if file_name != self.current_file:
+        # Update current file name if it's different and not None
+        if file_name is not None and file_name != self.current_file:
             self.current_file = file_name
+        
+        # If file_name is None, use a default value
+        display_file = self.current_file if self.current_file else "model files"
         
         # Skip if no callback is provided
         if not self.progress_callback:
@@ -124,12 +139,18 @@ class ProgressCallback:
                 # Calculate normalized progress (0-1) based on expected total size
                 progress = min(1.0, cache_size_mb / EXPECTED_CACHE_SIZE_MB)
                 
+                # Calculate a progress percentage for display
+                progress_percent = int(progress * 100)
+                
                 # Only call progress_callback if progress has changed significantly
                 if round(progress, 2) != self.last_progress:
-                    self.progress_callback(
-                        progress, 
-                        f"Downloading model files: {file_name} ({cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)"
+                    # Create a detailed message with progress percentage
+                    message = (
+                        f"Downloading {display_file}: {progress_percent}% complete " 
+                        f"({cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)"
                     )
+                    
+                    self.progress_callback(progress, message)
                     self.last_progress = round(progress, 2)
         except Exception as e:
             # Log error but don't crash if progress reporting fails
@@ -137,7 +158,7 @@ class ProgressCallback:
             
             # Still try to provide a reasonable progress update
             if self.last_progress < 0:  # Only if we haven't reported any progress yet
-                self.progress_callback(0.1, f"Downloading model files: {file_name}")
+                self.progress_callback(0.1, f"Downloading {display_file}... (progress estimation failed)")
                 self.last_progress = 0.1
 
 
@@ -249,11 +270,12 @@ def predict_with_score(
                 
                 # Create appropriate message based on progress
                 if batch_idx == 0:
-                    message = "Starting inference..."
+                    message = "🔍 STARTING ANALYSIS - Processing audio..."
                 elif batch_idx == total_batches - 1:  # Last batch
-                    message = "Finalizing inference results..."
+                    message = "🔍 COMPLETING ANALYSIS - Finalizing results..."
                 else:
-                    message = f"Processing batch {batch_idx + 1}/{total_batches}"
+                    percent_done = int(100 * (batch_idx + 1) / total_batches)
+                    message = f"🔍 ANALYZING AUDIO: {percent_done}% (Batch {batch_idx + 1}/{total_batches})"
                 
                 # Report progress to callback
                 progress_callback(inference_progress, message)
@@ -289,39 +311,139 @@ def get_gender_and_score(
         Dictionary with gender probabilities if one audio file, 
         or list of dictionaries if multiple audio files
     """
+    global _download_phase, _stop_monitoring, _monitor_thread, _last_reported_percentage
     cache_dir = "./cache"
     
-    # Track progress in two phases: model loading (0-0.5) and inference (0.5-1.0)
+    # Track progress in two phases: model loading (0-0.7) and inference (0.7-1.0)
+    # Giving more weight to model loading since it's a significant part of the process
     model_loading_callback = None
     inference_callback = None
     
     if progress_callback:
-        # Create a callback for model loading phase (0-0.5 of total progress)
+        # Create a callback for model loading phase (0-0.7 of total progress)
         def model_loading_callback(phase_progress, message):
-            # Map phase progress (0-1) to overall progress (0-0.5)
-            overall_progress = phase_progress * 0.5
+            # Map phase progress (0-1) to overall progress (0-0.7)
+            overall_progress = phase_progress * 0.7
             progress_callback(overall_progress, message)
         
-        # Create a callback for inference phase (0.5-1.0 of total progress)
+        # Create a callback for inference phase (0.7-1.0 of total progress)
         def inference_callback(phase_progress, message):
-            # Map phase progress (0-1) to overall progress (0.5-1.0)
-            overall_progress = 0.5 + phase_progress * 0.5
+            # Map phase progress (0-1) to overall progress (0.7-1.0)
+            overall_progress = 0.7 + phase_progress * 0.3
             progress_callback(overall_progress, message)
         
         # Initial progress report
         initial_cache_size_mb = get_cache_size_mb(cache_dir)
+        percentage = int(100 * initial_cache_size_mb / EXPECTED_CACHE_SIZE_MB)
         model_loading_callback(
             0.0, 
-            f"Preparing to load model (current cache: {initial_cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)..."
+            f"⬇️ STARTING MODEL DOWNLOAD: {percentage}% ({initial_cache_size_mb:.1f}MB/{EXPECTED_CACHE_SIZE_MB}MB)"
         )
         
-        # Create a HuggingFace progress callback
-        hf_callback = ProgressCallback(model_loading_callback, cache_dir=cache_dir)
+        # Start a background thread to monitor cache size for progress updates
+        # Reset global state
+        _download_phase["current"] = "feature_extractor"
+        _last_reported_percentage = 0
         
-        # Set the download progress callback for transformers
-        logging.set_verbosity_info()
-        # Set HF_HUB_ENABLE_HF_TRANSFER=1 for modern download API
+        # Create a new stop event if needed
+        if _stop_monitoring is None or _monitor_thread is None or not _monitor_thread.is_alive():
+            logging.info("MONITOR: Starting new monitoring thread")
+            _stop_monitoring = threading.Event()
+            
+            def monitor_cache_size():
+                last_size = 0
+                logging.info("MONITOR: Thread started")
+                
+                # Calculate expected sizes for phases
+                feature_size = 0.2 * EXPECTED_CACHE_SIZE_MB  # Feature extractor: ~20% of total
+                model_size = 0.8 * EXPECTED_CACHE_SIZE_MB    # Main model: ~80% of total
+                
+                while not _stop_monitoring.is_set():
+                    try:
+                        current_size = get_cache_size_mb(cache_dir)
+                        # Always log current state for debugging
+                        logging.info(f"MONITOR: Cache size={current_size:.1f}MB, Phase={_download_phase['current']}, Last Size={last_size:.1f}MB")
+                        
+                        # Make threshold smaller to get more updates
+                        if abs(current_size - last_size) > 0.1:  # Only update if size changed by more than 0.1MB
+                            # Different progress scaling depending on which component we're downloading
+                            if _download_phase["current"] == "feature_extractor":
+                                # Feature extractor is about 20% of the total download
+                                message_prefix = "⬇️ DOWNLOADING FEATURE EXTRACTOR"
+                                
+                                # For feature extractor: calculate percentage of feature extractor downloaded
+                                percentage = int(100 * current_size / feature_size)
+                                percentage = min(99, percentage)  # Cap at 99% to avoid confusion
+                                
+                                # For feature extractor: 0 to 0.2 progress
+                                progress = min(0.2, 0.2 * current_size / feature_size)
+                                size_ratio = f"({current_size:.1f}MB/{feature_size:.1f}MB)"
+                                
+                                # Auto-switch to model phase if feature extractor is done
+                                if percentage >= 95 and last_size > 0 and (current_size - last_size) < 0.05:
+                                    _download_phase["current"] = "model"
+                                    logging.info("PHASE CHANGE: Auto-switching to model download phase")
+                                    # Reset last size for new phase
+                                    last_size = current_size
+                                    continue
+                            else:
+                                # Main model is the remaining 80% of the download
+                                message_prefix = "⬇️ DOWNLOADING MODEL"
+                                
+                                # For model: calculate percentage of model downloaded (separate from feature extractor)
+                                adjusted_size = current_size - feature_size
+                                if adjusted_size < 0:
+                                    adjusted_size = 0
+                                percentage = int(100 * adjusted_size / model_size)
+                                percentage = min(99, percentage)  # Cap at 99% to avoid confusion
+                                
+                                # For main model: 0.2 to 0.7 progress
+                                # Simplify calculation: pretend we're starting fresh for model size
+                                download_progress = min(0.5, 0.5 * (adjusted_size / model_size))
+                                progress = 0.2 + download_progress
+                                size_ratio = f"({adjusted_size:.1f}MB/{model_size:.1f}MB)"
+                            
+                            # Only send updates when percentage changes or at least 1% change
+                            global _last_reported_percentage
+                            if percentage != _last_reported_percentage or abs(current_size - last_size) > (EXPECTED_CACHE_SIZE_MB * 0.01):
+                                # Log before attempting callback
+                                logging.info(f"MONITOR: Sending update - {message_prefix}: {percentage}% {size_ratio}")
+                                
+                                # Send progress update
+                                try:
+                                    model_loading_callback(
+                                        progress, 
+                                        f"{message_prefix}: {percentage}% {size_ratio}"
+                                    )
+                                    last_size = current_size
+                                    _last_reported_percentage = percentage
+                                except Exception as callback_error:
+                                    logging.error(f"Error in progress callback: {str(callback_error)}")
+                    except Exception as e:
+                        logging.error(f"Error monitoring cache size: {str(e)}")
+                    
+                    # Adjust sleep time based on download phase
+                    # More frequent updates during feature extractor download (smaller file)
+                    sleep_time = 0.2 if _download_phase["current"] == "feature_extractor" else 0.5
+                    time.sleep(sleep_time)
+                
+                logging.info("MONITOR: Thread exiting")
+            
+            # Start monitoring thread
+            _monitor_thread = threading.Thread(target=monitor_cache_size)
+            _monitor_thread.daemon = True  # Thread will exit when main thread exits
+            _monitor_thread.start()
+        else:
+            logging.info("MONITOR: Reusing existing monitoring thread")
+        
+        # Set up the Hugging Face environment for better download progress reporting
+        transformers_logging.set_verbosity_info()
+        
+        # Set environment variables for improved progress reporting
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        
+        # Instead of setting a callback directly (not supported in this version),
+        # we'll rely on our cache directory size monitoring for progress
     
     try:
         # Load feature extractor and model
@@ -332,9 +454,18 @@ def get_gender_and_score(
             force_download=False
         )
         
-        # Report after feature extractor is loaded (approximately 30% through model loading)
+        # Switch to model download phase
+        _download_phase["current"] = "model"
+        logging.info("PHASE CHANGE: Switching to model download phase")
+        
+        # Report after feature extractor is loaded (approximately 20% through model loading)
         if model_loading_callback:
-            model_loading_callback(0.3, "Feature extractor loaded, loading model...")
+            model_loading_callback(0.2, "✅ FEATURE EXTRACTOR LOADED - Downloading main model...")
+        
+        # Load the model with an additional progress update halfway through
+        if model_loading_callback:
+            # Add an intermediate progress update
+            model_loading_callback(0.75, "⚙️ SETTING UP MODEL - Preparing architecture...")
         
         model = AutoModelForAudioClassification.from_pretrained(
             model_name_or_path,
@@ -346,11 +477,25 @@ def get_gender_and_score(
             force_download=False
         )
         
+        # Add another progress update before final completion
+        if model_loading_callback:
+            model_loading_callback(0.85, "⚙️ INITIALIZING MODEL - Loading parameters...")
+            
         # Report model loaded successfully
         if model_loading_callback:
-            model_loading_callback(1.0, "Model loaded successfully")
+            model_loading_callback(0.95, "✅ MODEL READY - Setup complete")
+            
+        # Stop the cache size monitoring thread if it exists
+        if _stop_monitoring is not None:
+            logging.info("MONITOR: Stopping monitoring thread")
+            _stop_monitoring.set()
     
     except Exception as e:
+        # Stop the cache size monitoring thread if it exists
+        if _stop_monitoring is not None:
+            logging.info("MONITOR: Stopping monitoring thread")
+            _stop_monitoring.set()
+            
         if progress_callback:
             progress_callback(0, f"Error loading model: {str(e)}")
         raise

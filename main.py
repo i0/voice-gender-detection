@@ -29,8 +29,9 @@ class ProgressPhase:
     AUDIO_CONVERSION_START = 5
     AUDIO_CONVERSION_COMPLETE = 15
     MODEL_LOADING_START = 15
-    MODEL_LOADING_COMPLETE = 40
-    INFERENCE_START = 40
+    # Increase the MODEL_LOADING_COMPLETE value to ensure better progress display
+    MODEL_LOADING_COMPLETE = 60  # Was 40, increased to show more progress during download
+    INFERENCE_START = 60         # Updated to match MODEL_LOADING_COMPLETE
     INFERENCE_COMPLETE = 95
     FINALIZING = 95
     COMPLETE = 100
@@ -58,18 +59,29 @@ class ProgressManager:
         # Ensure progress is within bounds
         progress = max(0, min(100, progress))
         
-        # Only update if progress is moving forward
-        if progress >= self.current_progress:
+        # Check if this is a download message which should override UI
+        is_download_message = "DOWNLOADING" in message and "%" in message
+        
+        # For download messages, always update regardless of progress direction
+        if is_download_message or progress >= self.current_progress:
             old_progress = self.current_progress
-            self.current_progress = progress
-            self.current_message = message
             
-            # Log the progress update
-            self.logger.info(f"Progress update: {old_progress}% → {progress}%: {message}")
+            # If it's a download message, we'll keep using the same progress value
+            # but update the message, so the UI doesn't jump back
+            if is_download_message and progress < self.current_progress:
+                # Keep the progress at the same level, just update the message
+                self.logger.info(f"Override with download message: {message} (keeping progress at {self.current_progress}%)")
+                self.current_message = message
+            else:
+                # Normal forward progress update
+                self.current_progress = progress
+                self.current_message = message
+                self.logger.info(f"Progress update: {old_progress}% → {progress}%: {message}")
             
             # Notify listener if available
             if self.on_progress:
-                self.on_progress(progress, message)
+                # Always send current_progress (not progress) to avoid backward jumps
+                self.on_progress(self.current_progress, self.current_message)
         else:
             # Log attempt to move backward (but don't update)
             self.logger.warning(
