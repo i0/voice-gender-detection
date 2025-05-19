@@ -2,6 +2,8 @@
 
 This project provides a service for recognizing gender from audio files using a pre-trained model based on wav2vec2. It includes both an API with interactive documentation and a web-based UI.
 
+![Gender Recognition API Screenshot](screenshot.jpg)
+
 ## Features
 
 - 🎙️ Gender prediction from audio files (.wav, .mp3, .ogg)
