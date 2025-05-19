@@ -4,6 +4,7 @@ import logging
 import torch
 import uvicorn
 import asyncio
+import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, Dict, Union
@@ -111,6 +112,11 @@ async def ui():
                 .progress-fill { height: 100%; background-color: #4CAF50; width: 0%; transition: width 0.3s ease; }
                 .female { color: #FF69B4; }
                 .male { color: #0000FF; }
+                .timing-container { margin-top: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+                .timing-container h3 { margin-top: 0; color: #333; }
+                .timing-table { width: 100%; border-collapse: collapse; }
+                .timing-table th, .timing-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+                .timing-table th { background-color: #f2f2f2; }
                 .disclaimer { margin-top: 20px; padding: 15px; border: 1px solid #f8d7da; background-color: #f8d7da; color: #721c24; border-radius: 5px; }
             </style>
         </head>
@@ -207,6 +213,36 @@ async def ui():
                                         
                                         resultHtml += `<p><strong>Predicted Gender:</strong> ${icon} ${predictedGender} (${data.prediction.confidence.toFixed(6)}% confidence)</p>`;
                                         
+                                        // Add timing information
+                                        if (data.timing) {
+                                            resultHtml += `
+                                            <div class="timing-container">
+                                                <h3>⏱️ Processing Times</h3>
+                                                <table class="timing-table">
+                                                    <tr>
+                                                        <th>Process</th>
+                                                        <th>Time (seconds)</th>
+                                                    </tr>
+                                                    <tr>
+                                                        <td>Total Processing</td>
+                                                        <td>${data.timing.total}s</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td>Audio Conversion</td>
+                                                        <td>${data.timing.conversion}s</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td>Model Loading</td>
+                                                        <td>${data.timing.model_loading}s</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td>Inference</td>
+                                                        <td>${data.timing.inference}s</td>
+                                                    </tr>
+                                                </table>
+                                            </div>`;
+                                        }
+                                        
                                         result.innerHTML = resultHtml;
                                         result.style.display = 'block';
                                         
@@ -255,6 +291,15 @@ async def predict(file: UploadFile = File(...)):
     
     async def progress_generator():
         try:
+            # Start timing
+            start_time = time.time()
+            processing_times = {
+                "total": 0,
+                "conversion": 0,
+                "model_loading": 0,
+                "inference": 0
+            }
+            
             # Initial progress update
             yield json.dumps({"status": "processing", "progress": 0, "message": "Starting processing..."}) + "\n"
             await asyncio.sleep(0.1)  # Small delay to ensure frontend receives this message
@@ -270,10 +315,12 @@ async def predict(file: UploadFile = File(...)):
             # Convert to WAV if needed
             wav_path = temp_path
             if ext != ".wav":
+                conversion_start = time.time()
                 yield json.dumps({"status": "processing", "progress": 5, "message": f"Converting {ext} to WAV format..."}) + "\n"
                 audio = AudioSegment.from_file(temp_path)
                 wav_path = temp_path.replace(ext, ".wav")
                 audio.export(wav_path, format="wav")
+                processing_times["conversion"] = time.time() - conversion_start
                 yield json.dumps({"status": "processing", "progress": 10, "message": "Audio conversion complete"}) + "\n"
             
             # Process the audio file
@@ -282,6 +329,7 @@ async def predict(file: UploadFile = File(...)):
             
             # The model download callback will provide updates from 0-10% progress
             # We want this shown as 15-25% in the UI, so we'll offset accordingly
+            model_loading_start = time.time()
             def model_download_progress_callback(progress, message):
                 # Map model_progress (0-10%) to UI progress (15-25%)
                 ui_progress = 15 + progress
@@ -297,6 +345,7 @@ async def predict(file: UploadFile = File(...)):
             
             # While the model is processing, poll for progress updates
             last_progress = None
+            inference_start = None
             
             while not model_task.done():
                 # Check if we have a new progress update
@@ -312,12 +361,24 @@ async def predict(file: UploadFile = File(...)):
                     
                     # Update last progress so we don't send duplicates
                     last_progress = current_progress
+                    
+                    # Mark the end of model loading and start of inference
+                    if current_progress["progress"] >= 25 and inference_start is None:
+                        processing_times["model_loading"] = time.time() - model_loading_start
+                        inference_start = time.time()
                 
                 # Wait a bit before checking again
                 await asyncio.sleep(0.2)
             
             # Get the result from the completed model task
             result = await model_task
+            
+            # Calculate inference time
+            if inference_start:
+                processing_times["inference"] = time.time() - inference_start
+            
+            # Calculate total processing time
+            processing_times["total"] = time.time() - start_time
             
             # Send a 100% complete message
             yield json.dumps({"status": "processing", "progress": 99, "message": "Generating results..."}) + "\n"
@@ -336,7 +397,13 @@ async def predict(file: UploadFile = File(...)):
                 logger.info(f"👨 Prediction: Male (confidence: {confidence:.2f}%)")
                 gender_icon = "👨"
                 
-            # Final result with predictions
+            # Log timing information
+            logger.info(f"⏱️ Total processing time: {processing_times['total']:.2f}s")
+            logger.info(f"⏱️ Audio conversion: {processing_times['conversion']:.2f}s")
+            logger.info(f"⏱️ Model loading: {processing_times['model_loading']:.2f}s")
+            logger.info(f"⏱️ Inference: {processing_times['inference']:.2f}s")
+                
+            # Final result with predictions and timing
             yield json.dumps({
                 "status": "complete", 
                 "result": result,
@@ -344,6 +411,12 @@ async def predict(file: UploadFile = File(...)):
                     "gender": predicted_gender,
                     "confidence": confidence,
                     "icon": gender_icon
+                },
+                "timing": {
+                    "total": round(processing_times["total"], 2),
+                    "conversion": round(processing_times["conversion"], 2),
+                    "model_loading": round(processing_times["model_loading"], 2),
+                    "inference": round(processing_times["inference"], 2)
                 }
             }) + "\n"
             
@@ -375,7 +448,6 @@ async def run_model_processing(wav_path, download_progress_callback):
             progress_callback=download_progress_callback
         )
     )
-
 
 if __name__ == "__main__":
     port = 8000

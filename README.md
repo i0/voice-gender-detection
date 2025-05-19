@@ -8,7 +8,6 @@ This project provides a service for recognizing gender from audio files using a 
 - 🌐 FastAPI backend with automatic API documentation
 - 👥 Simple web interface for easy usage
 - 🐳 Docker support for easy deployment
-- 🖥️ GPU acceleration support for faster inference
 - 📊 Detailed logging with emojis
 
 ## Ethical Considerations
@@ -29,10 +28,6 @@ Gender prediction systems should be approached as probabilistic tools rather tha
 
 - Docker and Docker Compose (recommended)
 - Python 3.9+ (for local development)
-- For GPU acceleration:
-  - NVIDIA GPU with compatible drivers
-  - NVIDIA Container Toolkit (nvidia-docker2)
-  - Docker with GPU support enabled
 
 ### Running with Docker (Recommended)
 
@@ -40,21 +35,8 @@ Gender prediction systems should be approached as probabilistic tools rather tha
 2. Start the service:
 
 ```bash
-docker compose up --build
+docker-compose up
 ```
-
-#### Windows-specific Tips
-
-If you encounter issues on Windows:
-
-1. Configure Git to handle line endings properly:
-   ```
-   git config core.autocrlf false
-   ```
-
-2. Use WSL2 backend for Docker Desktop
-
-3. Configure Docker Desktop to use the GPU (Settings > Resources > WSL Integration)
 
 3. Access the services:
    - API and Documentation: http://localhost:8000/docs

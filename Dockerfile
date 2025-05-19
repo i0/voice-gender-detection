@@ -1,16 +1,9 @@
-FROM nvidia/cuda:11.6.2-cudnn8-runtime-ubuntu20.04
+FROM python:3.9-slim
 
 WORKDIR /app
 
-# Set environment variables to avoid interactive installation
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-dev \
     build-essential \
     libsndfile1 \
     ffmpeg \
@@ -20,10 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     portaudio19-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Check if symlinks already exist and create them only if they don't
-RUN if [ ! -e /usr/bin/python ]; then ln -s /usr/bin/python3 /usr/bin/python; fi && \
-    if [ ! -e /usr/bin/pip ]; then ln -s /usr/bin/pip3 /usr/bin/pip; fi
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
@@ -47,4 +36,4 @@ RUN ffmpeg -f lavfi -i "sine=frequency=1000:duration=5" -ar 16000 -ac 1 /app/cac
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
