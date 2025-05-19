@@ -32,6 +32,15 @@ app = FastAPI(
     },
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Log startup information when the application starts"""
+    port = 8000
+    logger.info(f"🚀 Starting Gender Recognition API on device: {DEVICE}")
+    logger.info(f"🌐 Server is running at: http://localhost:{port}")
+    logger.info(f"✨ Web UI: 🎙️ http://localhost:{port}/ui")
+    logger.info(f"📚 API Docs: 📋 http://localhost:{port}/docs")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -149,8 +158,8 @@ async def ui():
                     progressText.textContent = '0% - Starting...';
                     
                     try {
-                        // Use the streaming endpoint
-                        const response = await fetch('/predict-stream', {
+                        // Use the predict endpoint
+                        const response = await fetch('/predict', {
                             method: 'POST',
                             body: formData
                         });
@@ -226,15 +235,6 @@ async def ui():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """
-    Predict gender from an audio file
-    
-    This endpoint analyzes an audio file and returns probabilities for male/female classification.
-    Note that this is for educational purposes only and should be used responsibly.
-    """
-    
-@app.post("/predict-stream")
-async def predict_stream(file: UploadFile = File(...)):
     """
     Stream gender prediction progress from an audio file
     
@@ -353,54 +353,6 @@ async def predict_stream(file: UploadFile = File(...)):
     
     return StreamingResponse(progress_generator(), media_type="application/x-ndjson")
     
-    if ext not in valid_formats:
-        raise HTTPException(status_code=400, detail="Unsupported file format. Please upload .wav, .mp3, or .ogg files.")
-    
-    # Save the uploaded file
-    with NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
-        temp_file.write(await file.read())
-        temp_path = temp_file.name
-    
-    try:
-        # Convert to WAV if needed
-        wav_path = temp_path
-        if ext != ".wav":
-            logger.info(f"🔄 Converting {ext} to WAV format")
-            audio = AudioSegment.from_file(temp_path)
-            wav_path = temp_path.replace(ext, ".wav")
-            audio.export(wav_path, format="wav")
-        
-        # Process the audio file
-        logger.info(f"🎵 Processing audio file: {file.filename}")
-        result = get_gender_and_score(
-            model_name_or_path=MODEL_PATH,
-            audio_paths=[wav_path],
-            label2id=LABEL2ID,
-            id2label=ID2LABEL,
-            device=DEVICE
-        )
-        
-        # Log the prediction
-        female_score = result["female"]
-        male_score = result["male"]
-        predicted_gender = "female" if female_score > male_score else "male"
-        confidence = max(female_score, male_score) * 100
-        
-        if predicted_gender == "female":
-            logger.info(f"👩 Prediction: Female (confidence: {confidence:.2f}%)")
-        else:
-            logger.info(f"👨 Prediction: Male (confidence: {confidence:.2f}%)")
-        
-        return result
-    except Exception as e:
-        logger.error(f"❌ Error processing audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Clean up the temporary files
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        if ext != ".wav" and os.path.exists(wav_path):
-            os.unlink(wav_path)
 
 async def run_model_processing(wav_path, progress_callback):
     """Run model processing in an async-friendly way"""
@@ -421,5 +373,6 @@ async def health_check():
     return {"status": "healthy", "model": MODEL_PATH}
 
 if __name__ == "__main__":
-    logger.info(f"🚀 Starting Gender Recognition API on device: {DEVICE}")
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    port = 8000
+    # Logs are already printed in the app initialization
+    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=True)
