@@ -373,10 +373,6 @@ async def run_model_processing(wav_path, download_progress_callback):
         progress_callback=download_progress_callback
     )
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "model": MODEL_PATH}
 
 if __name__ == "__main__":
     port = 8000

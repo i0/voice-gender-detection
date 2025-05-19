@@ -69,7 +69,6 @@ python api.py
 - `GET /ui`: Web-based user interface
 - `GET /docs`: Interactive API documentation
 - `POST /predict`: Predict gender from an audio file
-- `GET /health`: Health check endpoint
 
 ### Example Requests
 
@@ -82,8 +81,6 @@ curl -X POST "http://localhost:8000/predict" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@/path/to/audio.wav"
 
-# Check API health
-curl -X GET "http://localhost:8000/health"
 ```
 
 #### Using Python
