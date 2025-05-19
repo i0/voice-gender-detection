@@ -8,6 +8,7 @@ This project provides a service for recognizing gender from audio files using a 
 - 🌐 FastAPI backend with automatic API documentation
 - 👥 Simple web interface for easy usage
 - 🐳 Docker support for easy deployment
+- ⏱️ Detailed timing metrics for performance analysis
 - 📊 Detailed logging with emojis
 
 ## Ethical Considerations
@@ -42,22 +43,39 @@ docker-compose up
    - API and Documentation: http://localhost:8000/docs
    - Web Interface: http://localhost:8000/ui
 
-### Running Locally
+### Running Locally (Faster Performance)
+
+Running the application locally typically provides better performance than Docker, especially for inference.
 
 1. Clone this repository
-2. Install dependencies:
+2. Create a virtual environment (recommended):
 
 ```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate on Windows
+venv\Scripts\activate
+
+# Activate on macOS/Linux
+source venv/bin/activate
+```
+
+3. Install dependencies:
+
+```bash
+# Install numpy first to avoid compatibility issues
+pip install numpy==1.24.3
 pip install -r requirements.txt
 ```
 
-3. Run the API server:
+4. Run the API server:
 
 ```bash
-python api.py
+python main.py
 ```
 
-4. Access the services:
+5. Access the services:
    - API and Documentation: http://localhost:8000/docs
    - Web Interface: http://localhost:8000/ui
 
@@ -121,9 +139,10 @@ This project uses the [alefiury/wav2vec2-large-xlsr-53-gender-recognition-libris
 The code structure includes:
 
 - `gender_predictor.py`: Core gender prediction functionality
-- `api.py`: FastAPI server implementation
+- `main.py`: FastAPI server implementation (formerly api.py)
 - `Dockerfile` & `docker-compose.yml`: Docker configuration
 - `static/`: Directory for static assets
+- `cache/`: Directory for cached model files
 
 ## Credits
 

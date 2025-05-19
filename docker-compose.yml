@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1 # Enables real-time logging
+      - PYTHONPATH=/app # Ensures modules can be found
     logging:
       driver: "json-file"
       options:

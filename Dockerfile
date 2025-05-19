@@ -36,4 +36,4 @@ RUN ffmpeg -f lavfi -i "sine=frequency=1000:duration=5" -ar 16000 -ac 1 /app/cac
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
