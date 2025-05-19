@@ -11,13 +11,13 @@ services:
       - PYTHONUNBUFFERED=1 # Enables real-time logging
       - NVIDIA_VISIBLE_DEVICES=all # Make all GPUs visible
       - CUDA_VISIBLE_DEVICES=0 # Use first GPU by default
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1 # Request 1 GPU (change this if you need more)
-              capabilities: [gpu]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # Request 1 GPU (change this if you need more)
+    #           capabilities: [gpu]
     logging:
       driver: "json-file"
       options:

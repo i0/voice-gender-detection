@@ -362,15 +362,18 @@ async def predict(file: UploadFile = File(...)):
 
 async def run_model_processing(wav_path, download_progress_callback):
     """Run model processing in an async-friendly way"""
-    # This runs the model in a way that doesn't block the event loop
-    return await asyncio.to_thread(
-        get_gender_and_score,
-        model_name_or_path=MODEL_PATH,
-        audio_paths=[wav_path],
-        label2id=LABEL2ID,
-        id2label=ID2LABEL,
-        device=DEVICE,
-        progress_callback=download_progress_callback
+    # Python 3.8 doesn't have asyncio.to_thread, so we use loop.run_in_executor instead
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,  # Use default executor
+        lambda: get_gender_and_score(
+            model_name_or_path=MODEL_PATH,
+            audio_paths=[wav_path],
+            label2id=LABEL2ID,
+            id2label=ID2LABEL,
+            device=DEVICE,
+            progress_callback=download_progress_callback
+        )
     )
 
 
