@@ -201,7 +201,6 @@ def get_gender_and_score(
     feature_extractor = AutoFeatureExtractor.from_pretrained(
         model_name_or_path, 
         cache_dir="./cache",
-        token=HfFolder.get_token(),
         use_auth_token=HfFolder.get_token(),
         force_download=False
     )
@@ -215,7 +214,6 @@ def get_gender_and_score(
         label2id=label2id,
         id2label=id2label,
         cache_dir="./cache",
-        token=HfFolder.get_token(),
         use_auth_token=HfFolder.get_token(),
         force_download=False
     )

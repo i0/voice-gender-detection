@@ -9,6 +9,15 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1 # Enables real-time logging
+      - NVIDIA_VISIBLE_DEVICES=all # Make all GPUs visible
+      - CUDA_VISIBLE_DEVICES=0 # Use first GPU by default
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU (change this if you need more)
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
