@@ -32,7 +32,66 @@ Gender prediction systems should be approached as probabilistic tools rather tha
 - Docker and Docker Compose (recommended)
 - Python 3.9+ (for local development)
 
-### Running with Docker (Recommended)
+### Running with Pre-built Docker Image (Easiest)
+
+Use the pre-built image from Docker Hub without cloning the repository:
+
+#### Option 1: Basic Usage (Model downloads on each restart)
+
+```bash
+# Pull and run the latest image
+docker run -p 8000:8000 mashreghi/voice-gender-detection:latest
+```
+
+#### Option 2: With Model Persistence (Recommended)
+
+To avoid re-downloading the model each time you restart the container, mount a volume for the cache directory:
+
+```bash
+# Create a local cache directory
+mkdir -p ./cache
+
+# Run with volume mount to persist models
+docker run -d --name gender-api -p 8000:8000 -v $(pwd)/cache:/app/cache mashreghi/voice-gender-detection:latest
+```
+
+**For Windows users:**
+```bash
+# Create a local cache directory
+mkdir cache
+
+# Run with volume mount
+docker run -d --name gender-api -p 8000:8000 -v "%cd%\cache:/app/cache" mashreghi/voice-gender-detection:latest
+```
+
+#### Option 3: Using Docker Compose with Published Image
+
+Create a `docker-compose.yml` file:
+
+```yaml
+services:
+  gender-api:
+    image: mashreghi/voice-gender-detection:latest
+    container_name: gender-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cache:/app/cache  # Persist models between restarts
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+```
+
+Then run:
+```bash
+docker-compose up -d
+```
+
+Access the services:
+- API and Documentation: http://localhost:8000/docs
+- Web Interface: http://localhost:8000/ui
+
+### Running with Docker (Build from Source)
 
 1. Clone this repository
 2. Start the service:
