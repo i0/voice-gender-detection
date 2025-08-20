@@ -24,8 +24,7 @@ RUN pip install --no-cache-dir pydub
 # Copy the application code
 COPY . .
 
-# Create cache directory 
-RUN mkdir -p /app/cache
+# Cache directory is already included from COPY . .
 RUN mkdir -p /app/static
 
 # Create a sample audio file for testing

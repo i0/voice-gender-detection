@@ -13,9 +13,9 @@ __pycache__
 *.swp
 *~
 
-# Cache folders (will be mounted as volume)
-cache/*
-!cache/.gitkeep
+# Cache folders - include models for production image
+# cache/*
+# !cache/.gitkeep
 
 # Virtual environments
 venv
